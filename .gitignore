@@ -1,0 +1,7 @@
+dist/
+bin/
+obj/
+*.exe
+*.ini
+*.ico
+*.pdb
