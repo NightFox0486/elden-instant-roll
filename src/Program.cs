@@ -5,10 +5,10 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("콩벌레 (EldenInstantRoll)")]
-[assembly: AssemblyDescription("콩벌레 (EldenInstantRoll) - 엘든링 · 밤의 통치자 키 누름 즉시 구르기")]
+[assembly: AssemblyDescription("콩벌레 (EldenInstantRoll) v1.1.0 - 엘든링 · 밤의 통치자 다중 키 누름 즉시 발동")]
 [assembly: AssemblyProduct("EldenInstantRoll")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace EldenInstantRoll
 {
@@ -50,7 +50,7 @@ namespace EldenInstantRoll
                 AppSettings settings = AppSettings.LoadFromFile(settingsPath);
                 if (!File.Exists(settingsPath))
                 {
-                    // Persist initial defaults cleanly so user can see/edit portable INI if desired
+                    // Persist initial defaults cleanly so user can inspect portable INI
                     settings.SaveToFile(settingsPath);
                 }
 

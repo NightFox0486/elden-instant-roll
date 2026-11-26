@@ -12,6 +12,7 @@ $testExe = Join-Path $env:TEMP "EldenInstantRoll.Tests.exe"
 $sources = @(
     (Join-Path $srcDir "NativeMethods.cs"),
     (Join-Path $srcDir "KeyBinding.cs"),
+    (Join-Path $srcDir "ActionBindingItem.cs"),
     (Join-Path $srcDir "AppSettings.cs"),
     (Join-Path $srcDir "StartupRegistryManager.cs"),
     (Join-Path $srcDir "AppController.cs"),

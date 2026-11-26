@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -8,6 +9,19 @@ namespace EldenInstantRoll
 {
     public sealed class MainForm : Form
     {
+        private sealed class ActionRowWidgets
+        {
+            public string ActionId;
+            public bool IsCustom;
+            public Panel RowPanel;
+            public Panel AccentBar;
+            public CheckBox EnabledCheckBox;
+            public Label NameLabel;
+            public Label KeyBadge;
+            public ModernButton ChangeKeyButton;
+            public ModernButton ClearOrDeleteButton;
+        }
+
         private readonly AppController _controller;
         private readonly InputHookEngine _hookEngine;
         private readonly uint _activateMessageId;
@@ -30,6 +44,7 @@ namespace EldenInstantRoll
 
         // Header
         private StatusBadgeControl _statusBadge;
+        private Label _activeSummaryLabel;
 
         // Card 1: Master & child toggles
         private ToggleSwitch _masterToggle;
@@ -44,16 +59,19 @@ namespace EldenInstantRoll
         private Label _autoStartTitleLabel;
         private Label _autoStartDescLabel;
 
-        // Card 2: Keybindings & delay
-        private Label _rollKeyBadge;
-        private ModernButton _rollKeyButton;
+        // Card 2: Multi-action list
+        private Label _listActiveCountLabel;
+        private ModernButton _addCustomButton;
+        private ModernButton _resetDefaultsButton;
+        private Panel _actionsScrollPanel;
+        private Label _actionFeedbackLabel;
+        private readonly Dictionary<string, ActionRowWidgets> _actionRows = new Dictionary<string, ActionRowWidgets>(StringComparer.OrdinalIgnoreCase);
+
+        // Card 3: Hotkey, delay, targets
         private Label _toggleHotkeyBadge;
         private ModernButton _toggleHotkeyButton;
         private TrackBar _delayTrackBar;
         private NumericUpDown _delayNumeric;
-        private Label _keyFeedbackLabel;
-
-        // Card 3: Target games
         private CheckBox _nightreignCheckBox;
         private CheckBox _eldenRingCheckBox;
         private TextBox _customProcessesTextBox;
@@ -84,6 +102,7 @@ namespace EldenInstantRoll
             NativeMethods.TryEnableDarkTitleBar(this.Handle);
 
             _hookEngine.RefreshForegroundProcess();
+            RebuildActionRows();
             SyncUiFromController();
             StartStatusTimer();
         }
@@ -99,212 +118,258 @@ namespace EldenInstantRoll
         {
             SuspendLayout();
 
-            Text = "콩벌레 (EldenInstantRoll)";
+            Text = "콩벌레 (EldenInstantRoll) v1.1.0";
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
-            ClientSize = new Size(510, 676);
+            ClientSize = new Size(640, 736);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = ThemeColors.Background;
             ForeColor = ThemeColors.TextPrimary;
-            Font = new Font("Malgun Gothic", 9.5F, FontStyle.Regular, GraphicsUnit.Point);
+            Font = new Font("Malgun Gothic", 9.2F, FontStyle.Regular, GraphicsUnit.Point);
             Icon = _iconActive;
             KeyPreview = true;
 
-            int margin = 18;
+            int margin = 16;
             int cardWidth = ClientSize.Width - margin * 2;
 
             // ===== Header =====
             Label titleLabel = new Label();
-            titleLabel.Text = "콩벌레 (EldenInstantRoll)";
+            titleLabel.Text = "콩벌레 (EldenInstantRoll)  v1.1.0";
             titleLabel.Font = new Font("Malgun Gothic", 13.5F, FontStyle.Bold);
             titleLabel.ForeColor = ThemeColors.Gold;
-            titleLabel.Location = new Point(margin, 16);
+            titleLabel.Location = new Point(margin, 14);
             titleLabel.AutoSize = true;
             Controls.Add(titleLabel);
 
             Label subtitleLabel = new Label();
-            subtitleLabel.Text = "엘든링 · 밤의 통치자 키 누름 즉시 구르기";
-            subtitleLabel.Font = new Font("Malgun Gothic", 8.8F, FontStyle.Regular);
+            subtitleLabel.Text = "엘든링 · 밤의 통치자 키 누름 즉시 발동 (다중 키 지원)";
+            subtitleLabel.Font = new Font("Malgun Gothic", 8.6F, FontStyle.Regular);
             subtitleLabel.ForeColor = ThemeColors.TextSecondary;
-            subtitleLabel.Location = new Point(margin + 1, 45);
+            subtitleLabel.Location = new Point(margin + 1, 42);
             subtitleLabel.AutoSize = true;
             Controls.Add(subtitleLabel);
 
             _statusBadge = new StatusBadgeControl();
-            _statusBadge.Font = new Font("Malgun Gothic", 9F, FontStyle.Bold);
-            _statusBadge.Size = new Size(138, 30);
-            _statusBadge.Location = new Point(ClientSize.Width - margin - _statusBadge.Width, 22);
+            _statusBadge.Font = new Font("Malgun Gothic", 8.8F, FontStyle.Bold);
+            _statusBadge.Size = new Size(132, 28);
+            _statusBadge.Location = new Point(ClientSize.Width - margin - _statusBadge.Width, 14);
             Controls.Add(_statusBadge);
+
+            _activeSummaryLabel = new Label();
+            _activeSummaryLabel.Text = "활성 키: 1개";
+            _activeSummaryLabel.Font = new Font("Malgun Gothic", 8.3F, FontStyle.Bold);
+            _activeSummaryLabel.ForeColor = ThemeColors.Emerald;
+            _activeSummaryLabel.TextAlign = ContentAlignment.MiddleRight;
+            _activeSummaryLabel.Location = new Point(ClientSize.Width - margin - 260, 44);
+            _activeSummaryLabel.Size = new Size(260, 18);
+            Controls.Add(_activeSummaryLabel);
 
             // ===== Card 1: Master Control (Top Priority) =====
             RoundedCardPanel cardMaster = new RoundedCardPanel();
-            cardMaster.Location = new Point(margin, 76);
-            cardMaster.Size = new Size(cardWidth, 186);
+            cardMaster.Location = new Point(margin, 70);
+            cardMaster.Size = new Size(cardWidth, 126);
             Controls.Add(cardMaster);
 
             _masterTitleLabel = new Label();
-            _masterTitleLabel.Text = "마스터 ON / OFF";
-            _masterTitleLabel.Font = new Font("Malgun Gothic", 11.5F, FontStyle.Bold);
+            _masterTitleLabel.Text = "마스터 활성화 (ON)";
+            _masterTitleLabel.Font = new Font("Malgun Gothic", 11F, FontStyle.Bold);
             _masterTitleLabel.ForeColor = ThemeColors.TextPrimary;
             _masterTitleLabel.BackColor = ThemeColors.CardBg;
-            _masterTitleLabel.Location = new Point(16, 14);
-            _masterTitleLabel.Size = new Size(340, 24);
+            _masterTitleLabel.Location = new Point(16, 12);
+            _masterTitleLabel.Size = new Size(420, 22);
             cardMaster.Controls.Add(_masterTitleLabel);
 
             _masterHintLabel = new Label();
-            _masterHintLabel.Text = "끄면 즉시 중지되며 하위 자동 켜짐 2개가 모두 꺼지고 비활성화됩니다.";
-            _masterHintLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
+            _masterHintLabel.Text = "끄면 모든 즉시 발동이 중지되며 하위 자동 켜짐 2개가 모두 꺼지고 비활성화(레지스트리 삭제)됩니다.";
+            _masterHintLabel.Font = new Font("Malgun Gothic", 8F, FontStyle.Regular);
             _masterHintLabel.ForeColor = ThemeColors.TextSecondary;
             _masterHintLabel.BackColor = ThemeColors.CardBg;
-            _masterHintLabel.Location = new Point(16, 40);
-            _masterHintLabel.Size = new Size(368, 18);
+            _masterHintLabel.Location = new Point(16, 36);
+            _masterHintLabel.Size = new Size(505, 18);
             cardMaster.Controls.Add(_masterHintLabel);
 
             _masterToggle = new ToggleSwitch();
             _masterToggle.Size = new Size(56, 30);
-            _masterToggle.Location = new Point(cardMaster.Width - 16 - _masterToggle.Width, 18);
+            _masterToggle.Location = new Point(cardMaster.Width - 16 - _masterToggle.Width, 16);
             _masterToggle.OnColor = ThemeColors.Emerald;
             cardMaster.Controls.Add(_masterToggle);
 
             Panel divider1 = new Panel();
             divider1.BackColor = ThemeColors.Divider;
-            divider1.Location = new Point(16, 68);
+            divider1.Location = new Point(16, 62);
             divider1.Size = new Size(cardMaster.Width - 32, 1);
             cardMaster.Controls.Add(divider1);
 
-            // Child Toggle 1: AutoEnableOnGame
+            // Child Toggle 1 (Left half)
             _autoGameTitleLabel = new Label();
             _autoGameTitleLabel.Text = "게임 감지 자동 켜짐";
-            _autoGameTitleLabel.Font = new Font("Malgun Gothic", 9.8F, FontStyle.Bold);
+            _autoGameTitleLabel.Font = new Font("Malgun Gothic", 9.3F, FontStyle.Bold);
             _autoGameTitleLabel.ForeColor = ThemeColors.TextPrimary;
             _autoGameTitleLabel.BackColor = ThemeColors.CardBg;
-            _autoGameTitleLabel.Location = new Point(16, 80);
-            _autoGameTitleLabel.Size = new Size(350, 20);
+            _autoGameTitleLabel.Location = new Point(16, 73);
+            _autoGameTitleLabel.Size = new Size(216, 20);
             cardMaster.Controls.Add(_autoGameTitleLabel);
 
             _autoGameDescLabel = new Label();
-            _autoGameDescLabel.Text = "선택된 게임 창이 활성일 때만 자동 작동 (끄면 모든 창에서 수동 작동)";
-            _autoGameDescLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
+            _autoGameDescLabel.Text = "대상 게임 활성 시만 작동 (끄면 수동)";
+            _autoGameDescLabel.Font = new Font("Malgun Gothic", 7.8F, FontStyle.Regular);
             _autoGameDescLabel.ForeColor = ThemeColors.TextSecondary;
             _autoGameDescLabel.BackColor = ThemeColors.CardBg;
-            _autoGameDescLabel.Location = new Point(16, 101);
-            _autoGameDescLabel.Size = new Size(375, 18);
+            _autoGameDescLabel.Location = new Point(16, 94);
+            _autoGameDescLabel.Size = new Size(220, 18);
             cardMaster.Controls.Add(_autoGameDescLabel);
 
             _autoGameToggle = new ToggleSwitch();
-            _autoGameToggle.Size = new Size(46, 24);
-            _autoGameToggle.Location = new Point(cardMaster.Width - 16 - _autoGameToggle.Width, 87);
+            _autoGameToggle.Size = new Size(44, 24);
+            _autoGameToggle.Location = new Point(242, 80);
             _autoGameToggle.OnColor = ThemeColors.Gold;
             cardMaster.Controls.Add(_autoGameToggle);
 
-            // Child Toggle 2: AutoStartWithWindows
+            Panel vDivider = new Panel();
+            vDivider.BackColor = ThemeColors.Divider;
+            vDivider.Location = new Point(302, 74);
+            vDivider.Size = new Size(1, 38);
+            cardMaster.Controls.Add(vDivider);
+
+            // Child Toggle 2 (Right half)
             _autoStartTitleLabel = new Label();
             _autoStartTitleLabel.Text = "윈도우 부팅 시 자동 실행";
-            _autoStartTitleLabel.Font = new Font("Malgun Gothic", 9.8F, FontStyle.Bold);
+            _autoStartTitleLabel.Font = new Font("Malgun Gothic", 9.3F, FontStyle.Bold);
             _autoStartTitleLabel.ForeColor = ThemeColors.TextPrimary;
             _autoStartTitleLabel.BackColor = ThemeColors.CardBg;
-            _autoStartTitleLabel.Location = new Point(16, 132);
-            _autoStartTitleLabel.Size = new Size(350, 20);
+            _autoStartTitleLabel.Location = new Point(318, 73);
+            _autoStartTitleLabel.Size = new Size(214, 20);
             cardMaster.Controls.Add(_autoStartTitleLabel);
 
             _autoStartDescLabel = new Label();
-            _autoStartDescLabel.Text = "Windows 시작 시 트레이로 자동 실행 (마스터 OFF 시 즉시 해제)";
-            _autoStartDescLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
+            _autoStartDescLabel.Text = "시작 시 트레이 실행 (마스터 OFF 시 해제)";
+            _autoStartDescLabel.Font = new Font("Malgun Gothic", 7.8F, FontStyle.Regular);
             _autoStartDescLabel.ForeColor = ThemeColors.TextSecondary;
             _autoStartDescLabel.BackColor = ThemeColors.CardBg;
-            _autoStartDescLabel.Location = new Point(16, 153);
-            _autoStartDescLabel.Size = new Size(375, 18);
+            _autoStartDescLabel.Location = new Point(318, 94);
+            _autoStartDescLabel.Size = new Size(222, 18);
             cardMaster.Controls.Add(_autoStartDescLabel);
 
             _autoStartToggle = new ToggleSwitch();
-            _autoStartToggle.Size = new Size(46, 24);
-            _autoStartToggle.Location = new Point(cardMaster.Width - 16 - _autoStartToggle.Width, 139);
+            _autoStartToggle.Size = new Size(44, 24);
+            _autoStartToggle.Location = new Point(cardMaster.Width - 16 - _autoStartToggle.Width, 80);
             _autoStartToggle.OnColor = ThemeColors.Gold;
             cardMaster.Controls.Add(_autoStartToggle);
 
-            // ===== Card 2: Key & Input Settings =====
-            RoundedCardPanel cardKeys = new RoundedCardPanel();
-            cardKeys.Location = new Point(margin, 276);
-            cardKeys.Size = new Size(cardWidth, 184);
-            Controls.Add(cardKeys);
+            // ===== Card 2: Core Nightreign Multi-Action List =====
+            RoundedCardPanel cardActions = new RoundedCardPanel();
+            cardActions.Location = new Point(margin, 208);
+            cardActions.Size = new Size(cardWidth, 354);
+            Controls.Add(cardActions);
 
-            Label keysHeader = new Label();
-            keysHeader.Text = "키 및 입력 설정 (한/영 무관 스캔코드)";
-            keysHeader.Font = new Font("Malgun Gothic", 10F, FontStyle.Bold);
-            keysHeader.ForeColor = ThemeColors.Gold;
-            keysHeader.BackColor = ThemeColors.CardBg;
-            keysHeader.Location = new Point(16, 12);
-            keysHeader.AutoSize = true;
-            cardKeys.Controls.Add(keysHeader);
+            Label actionsHeader = new Label();
+            actionsHeader.Text = "즉시 발동 키 목록";
+            actionsHeader.Font = new Font("Malgun Gothic", 10F, FontStyle.Bold);
+            actionsHeader.ForeColor = ThemeColors.Gold;
+            actionsHeader.BackColor = ThemeColors.CardBg;
+            actionsHeader.Location = new Point(16, 12);
+            actionsHeader.AutoSize = true;
+            cardActions.Controls.Add(actionsHeader);
 
-            // Row 1: Roll Key
-            Label rollKeyLabel = new Label();
-            rollKeyLabel.Text = "구르기 키";
-            rollKeyLabel.Font = new Font("Malgun Gothic", 9.5F, FontStyle.Regular);
-            rollKeyLabel.ForeColor = ThemeColors.TextPrimary;
-            rollKeyLabel.BackColor = ThemeColors.CardBg;
-            rollKeyLabel.Location = new Point(16, 46);
-            rollKeyLabel.Size = new Size(120, 26);
-            rollKeyLabel.TextAlign = ContentAlignment.MiddleLeft;
-            cardKeys.Controls.Add(rollKeyLabel);
+            _listActiveCountLabel = new Label();
+            _listActiveCountLabel.Text = "활성 키: 1개";
+            _listActiveCountLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Bold);
+            _listActiveCountLabel.ForeColor = ThemeColors.Emerald;
+            _listActiveCountLabel.BackColor = ThemeColors.CardBg;
+            _listActiveCountLabel.Location = new Point(144, 14);
+            _listActiveCountLabel.Size = new Size(236, 18);
+            cardActions.Controls.Add(_listActiveCountLabel);
 
-            _rollKeyBadge = new Label();
-            _rollKeyBadge.BackColor = ThemeColors.InputBg;
-            _rollKeyBadge.ForeColor = ThemeColors.TextPrimary;
-            _rollKeyBadge.BorderStyle = BorderStyle.FixedSingle;
-            _rollKeyBadge.Font = new Font("Consolas", 10F, FontStyle.Bold);
-            _rollKeyBadge.TextAlign = ContentAlignment.MiddleCenter;
-            _rollKeyBadge.Location = new Point(144, 44);
-            _rollKeyBadge.Size = new Size(192, 30);
-            cardKeys.Controls.Add(_rollKeyBadge);
+            _addCustomButton = new ModernButton();
+            _addCustomButton.Text = "+ 키 추가";
+            _addCustomButton.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Bold);
+            _addCustomButton.Size = new Size(84, 26);
+            _addCustomButton.Location = new Point(cardActions.Width - 16 - 92 - 8 - 84, 10);
+            cardActions.Controls.Add(_addCustomButton);
 
-            _rollKeyButton = new ModernButton();
-            _rollKeyButton.Text = "키 변경";
-            _rollKeyButton.Font = new Font("Malgun Gothic", 9F, FontStyle.Bold);
-            _rollKeyButton.Location = new Point(346, 44);
-            _rollKeyButton.Size = new Size(112, 30);
-            cardKeys.Controls.Add(_rollKeyButton);
+            _resetDefaultsButton = new ModernButton();
+            _resetDefaultsButton.Text = "기본값 초기화";
+            _resetDefaultsButton.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
+            _resetDefaultsButton.Size = new Size(92, 26);
+            _resetDefaultsButton.Location = new Point(cardActions.Width - 16 - 92, 10);
+            cardActions.Controls.Add(_resetDefaultsButton);
 
-            // Row 2: Toggle Hotkey
+            Label guideLabel = new Label();
+            guideLabel.Text = "체크된 키만 누르는 즉시 짧은 탭으로 발동됩니다. (차징·홀드가 필요한 키는 1클릭으로 체크 해제)";
+            guideLabel.Font = new Font("Malgun Gothic", 8F, FontStyle.Regular);
+            guideLabel.ForeColor = ThemeColors.TextSecondary;
+            guideLabel.BackColor = ThemeColors.CardBg;
+            guideLabel.Location = new Point(16, 40);
+            guideLabel.Size = new Size(cardActions.Width - 32, 18);
+            cardActions.Controls.Add(guideLabel);
+
+            Panel listBorder = new Panel();
+            listBorder.BackColor = ThemeColors.InputBorder;
+            listBorder.Location = new Point(14, 62);
+            listBorder.Size = new Size(cardActions.Width - 28, 260);
+            listBorder.Padding = new Padding(1);
+            cardActions.Controls.Add(listBorder);
+
+            _actionsScrollPanel = new Panel();
+            _actionsScrollPanel.Dock = DockStyle.Fill;
+            _actionsScrollPanel.BackColor = ThemeColors.InputBg;
+            _actionsScrollPanel.AutoScroll = true;
+            listBorder.Controls.Add(_actionsScrollPanel);
+
+            _actionFeedbackLabel = new Label();
+            _actionFeedbackLabel.Text = "한/영 무관 스캔코드 기반 · 마우스 키 미사용 시 마우스 후크 미설치 (0ms 지연)";
+            _actionFeedbackLabel.Font = new Font("Malgun Gothic", 8.1F, FontStyle.Regular);
+            _actionFeedbackLabel.ForeColor = ThemeColors.TextSecondary;
+            _actionFeedbackLabel.BackColor = ThemeColors.CardBg;
+            _actionFeedbackLabel.Location = new Point(16, 329);
+            _actionFeedbackLabel.Size = new Size(cardActions.Width - 32, 18);
+            cardActions.Controls.Add(_actionFeedbackLabel);
+
+            // ===== Card 3: Hotkey, Delay & Target Games =====
+            RoundedCardPanel cardOptions = new RoundedCardPanel();
+            cardOptions.Location = new Point(margin, 572);
+            cardOptions.Size = new Size(cardWidth, 112);
+            Controls.Add(cardOptions);
+
+            // Row 1: Toggle hotkey + Tap delay
             Label toggleKeyLabel = new Label();
             toggleKeyLabel.Text = "ON/OFF 단축키";
-            toggleKeyLabel.Font = new Font("Malgun Gothic", 9.5F, FontStyle.Regular);
+            toggleKeyLabel.Font = new Font("Malgun Gothic", 9F, FontStyle.Bold);
             toggleKeyLabel.ForeColor = ThemeColors.TextPrimary;
             toggleKeyLabel.BackColor = ThemeColors.CardBg;
-            toggleKeyLabel.Location = new Point(16, 86);
-            toggleKeyLabel.Size = new Size(120, 26);
+            toggleKeyLabel.Location = new Point(16, 16);
+            toggleKeyLabel.Size = new Size(98, 26);
             toggleKeyLabel.TextAlign = ContentAlignment.MiddleLeft;
-            cardKeys.Controls.Add(toggleKeyLabel);
+            cardOptions.Controls.Add(toggleKeyLabel);
 
             _toggleHotkeyBadge = new Label();
             _toggleHotkeyBadge.BackColor = ThemeColors.InputBg;
             _toggleHotkeyBadge.ForeColor = ThemeColors.TextPrimary;
             _toggleHotkeyBadge.BorderStyle = BorderStyle.FixedSingle;
-            _toggleHotkeyBadge.Font = new Font("Consolas", 10F, FontStyle.Bold);
+            _toggleHotkeyBadge.Font = new Font("Consolas", 9.5F, FontStyle.Bold);
             _toggleHotkeyBadge.TextAlign = ContentAlignment.MiddleCenter;
-            _toggleHotkeyBadge.Location = new Point(144, 84);
-            _toggleHotkeyBadge.Size = new Size(192, 30);
-            cardKeys.Controls.Add(_toggleHotkeyBadge);
+            _toggleHotkeyBadge.Location = new Point(116, 15);
+            _toggleHotkeyBadge.Size = new Size(106, 28);
+            cardOptions.Controls.Add(_toggleHotkeyBadge);
 
             _toggleHotkeyButton = new ModernButton();
-            _toggleHotkeyButton.Text = "단축키 변경";
-            _toggleHotkeyButton.Font = new Font("Malgun Gothic", 9F, FontStyle.Bold);
-            _toggleHotkeyButton.Location = new Point(346, 84);
-            _toggleHotkeyButton.Size = new Size(112, 30);
-            cardKeys.Controls.Add(_toggleHotkeyButton);
+            _toggleHotkeyButton.Text = "변경";
+            _toggleHotkeyButton.Font = new Font("Malgun Gothic", 8.5F, FontStyle.Bold);
+            _toggleHotkeyButton.Location = new Point(228, 15);
+            _toggleHotkeyButton.Size = new Size(56, 28);
+            cardOptions.Controls.Add(_toggleHotkeyButton);
 
-            // Row 3: Tap Delay
             Label delayLabel = new Label();
-            delayLabel.Text = "입력 유지 시간";
-            delayLabel.Font = new Font("Malgun Gothic", 9.5F, FontStyle.Regular);
+            delayLabel.Text = "유지 시간";
+            delayLabel.Font = new Font("Malgun Gothic", 9F, FontStyle.Bold);
             delayLabel.ForeColor = ThemeColors.TextPrimary;
             delayLabel.BackColor = ThemeColors.CardBg;
-            delayLabel.Location = new Point(16, 126);
-            delayLabel.Size = new Size(120, 26);
+            delayLabel.Location = new Point(304, 16);
+            delayLabel.Size = new Size(64, 26);
             delayLabel.TextAlign = ContentAlignment.MiddleLeft;
-            cardKeys.Controls.Add(delayLabel);
+            cardOptions.Controls.Add(delayLabel);
 
             _delayTrackBar = new TrackBar();
             _delayTrackBar.Minimum = AppSettings.MinTapDelayMs;
@@ -312,9 +377,9 @@ namespace EldenInstantRoll
             _delayTrackBar.TickFrequency = 5;
             _delayTrackBar.TickStyle = TickStyle.None;
             _delayTrackBar.BackColor = ThemeColors.CardBg;
-            _delayTrackBar.Location = new Point(142, 125);
-            _delayTrackBar.Size = new Size(216, 28);
-            cardKeys.Controls.Add(_delayTrackBar);
+            _delayTrackBar.Location = new Point(368, 16);
+            _delayTrackBar.Size = new Size(134, 26);
+            cardOptions.Controls.Add(_delayTrackBar);
 
             _delayNumeric = new NumericUpDown();
             _delayNumeric.Minimum = AppSettings.MinTapDelayMs;
@@ -322,117 +387,350 @@ namespace EldenInstantRoll
             _delayNumeric.BackColor = ThemeColors.InputBg;
             _delayNumeric.ForeColor = ThemeColors.TextPrimary;
             _delayNumeric.BorderStyle = BorderStyle.FixedSingle;
-            _delayNumeric.Font = new Font("Consolas", 10F, FontStyle.Bold);
-            _delayNumeric.Location = new Point(366, 126);
-            _delayNumeric.Size = new Size(58, 26);
-            cardKeys.Controls.Add(_delayNumeric);
+            _delayNumeric.Font = new Font("Consolas", 9.5F, FontStyle.Bold);
+            _delayNumeric.Location = new Point(508, 17);
+            _delayNumeric.Size = new Size(54, 24);
+            cardOptions.Controls.Add(_delayNumeric);
 
             Label msUnitLabel = new Label();
             msUnitLabel.Text = "ms";
-            msUnitLabel.Font = new Font("Malgun Gothic", 9F, FontStyle.Regular);
+            msUnitLabel.Font = new Font("Malgun Gothic", 8.8F, FontStyle.Regular);
             msUnitLabel.ForeColor = ThemeColors.TextSecondary;
             msUnitLabel.BackColor = ThemeColors.CardBg;
-            msUnitLabel.Location = new Point(428, 128);
+            msUnitLabel.Location = new Point(566, 19);
             msUnitLabel.AutoSize = true;
-            cardKeys.Controls.Add(msUnitLabel);
+            cardOptions.Controls.Add(msUnitLabel);
 
-            _keyFeedbackLabel = new Label();
-            _keyFeedbackLabel.Text = "키보드 아무 키 또는 마우스 사이드 버튼(Mouse4/Mouse5/휠클릭) 지원";
-            _keyFeedbackLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
-            _keyFeedbackLabel.ForeColor = ThemeColors.TextSecondary;
-            _keyFeedbackLabel.BackColor = ThemeColors.CardBg;
-            _keyFeedbackLabel.Location = new Point(16, 158);
-            _keyFeedbackLabel.Size = new Size(cardKeys.Width - 32, 18);
-            cardKeys.Controls.Add(_keyFeedbackLabel);
+            Panel divider3 = new Panel();
+            divider3.BackColor = ThemeColors.Divider;
+            divider3.Location = new Point(16, 52);
+            divider3.Size = new Size(cardOptions.Width - 32, 1);
+            cardOptions.Controls.Add(divider3);
 
-            // ===== Card 3: Target Games =====
-            RoundedCardPanel cardTargets = new RoundedCardPanel();
-            cardTargets.Location = new Point(margin, 474);
-            cardTargets.Size = new Size(cardWidth, 134);
-            Controls.Add(cardTargets);
-
-            Label targetHeader = new Label();
-            targetHeader.Text = "대상 게임 선택";
-            targetHeader.Font = new Font("Malgun Gothic", 10F, FontStyle.Bold);
-            targetHeader.ForeColor = ThemeColors.Gold;
-            targetHeader.BackColor = ThemeColors.CardBg;
-            targetHeader.Location = new Point(16, 12);
-            targetHeader.AutoSize = true;
-            cardTargets.Controls.Add(targetHeader);
-
-            _foregroundStatusLabel = new Label();
-            _foregroundStatusLabel.Text = "활성 창: -";
-            _foregroundStatusLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
-            _foregroundStatusLabel.ForeColor = ThemeColors.TextSecondary;
-            _foregroundStatusLabel.BackColor = ThemeColors.CardBg;
-            _foregroundStatusLabel.TextAlign = ContentAlignment.MiddleRight;
-            _foregroundStatusLabel.Location = new Point(180, 12);
-            _foregroundStatusLabel.Size = new Size(cardTargets.Width - 196, 18);
-            cardTargets.Controls.Add(_foregroundStatusLabel);
-
+            // Row 2: Target games + foreground status
             _nightreignCheckBox = new CheckBox();
-            _nightreignCheckBox.Text = "엘든링: 밤의 통치자 (nightreign.exe)";
+            _nightreignCheckBox.Text = "밤의 통치자 (nightreign.exe)";
             _nightreignCheckBox.ForeColor = ThemeColors.TextPrimary;
             _nightreignCheckBox.BackColor = ThemeColors.CardBg;
-            _nightreignCheckBox.Font = new Font("Malgun Gothic", 9.3F, FontStyle.Regular);
-            _nightreignCheckBox.Location = new Point(16, 38);
+            _nightreignCheckBox.Font = new Font("Malgun Gothic", 8.7F, FontStyle.Regular);
+            _nightreignCheckBox.Location = new Point(16, 61);
             _nightreignCheckBox.AutoSize = true;
-            cardTargets.Controls.Add(_nightreignCheckBox);
+            cardOptions.Controls.Add(_nightreignCheckBox);
 
             _eldenRingCheckBox = new CheckBox();
             _eldenRingCheckBox.Text = "엘든링 본편 (eldenring.exe)";
             _eldenRingCheckBox.ForeColor = ThemeColors.TextPrimary;
             _eldenRingCheckBox.BackColor = ThemeColors.CardBg;
-            _eldenRingCheckBox.Font = new Font("Malgun Gothic", 9.3F, FontStyle.Regular);
-            _eldenRingCheckBox.Location = new Point(16, 65);
+            _eldenRingCheckBox.Font = new Font("Malgun Gothic", 8.7F, FontStyle.Regular);
+            _eldenRingCheckBox.Location = new Point(214, 61);
             _eldenRingCheckBox.AutoSize = true;
-            cardTargets.Controls.Add(_eldenRingCheckBox);
+            cardOptions.Controls.Add(_eldenRingCheckBox);
+
+            _foregroundStatusLabel = new Label();
+            _foregroundStatusLabel.Text = "활성 창: -";
+            _foregroundStatusLabel.Font = new Font("Malgun Gothic", 8F, FontStyle.Regular);
+            _foregroundStatusLabel.ForeColor = ThemeColors.TextSecondary;
+            _foregroundStatusLabel.BackColor = ThemeColors.CardBg;
+            _foregroundStatusLabel.TextAlign = ContentAlignment.MiddleRight;
+            _foregroundStatusLabel.Location = new Point(402, 62);
+            _foregroundStatusLabel.Size = new Size(cardOptions.Width - 418, 18);
+            cardOptions.Controls.Add(_foregroundStatusLabel);
 
             Label customProcLabel = new Label();
             customProcLabel.Text = "추가 프로세스 (.exe, 쉼표 구분):";
-            customProcLabel.Font = new Font("Malgun Gothic", 8.5F, FontStyle.Regular);
+            customProcLabel.Font = new Font("Malgun Gothic", 8.2F, FontStyle.Regular);
             customProcLabel.ForeColor = ThemeColors.TextSecondary;
             customProcLabel.BackColor = ThemeColors.CardBg;
-            customProcLabel.Location = new Point(16, 98);
+            customProcLabel.Location = new Point(16, 86);
             customProcLabel.AutoSize = true;
-            cardTargets.Controls.Add(customProcLabel);
+            cardOptions.Controls.Add(customProcLabel);
 
             _customProcessesTextBox = new TextBox();
             _customProcessesTextBox.BackColor = ThemeColors.InputBg;
             _customProcessesTextBox.ForeColor = ThemeColors.TextPrimary;
             _customProcessesTextBox.BorderStyle = BorderStyle.FixedSingle;
-            _customProcessesTextBox.Font = new Font("Consolas", 9.2F, FontStyle.Regular);
-            _customProcessesTextBox.Location = new Point(216, 94);
-            _customProcessesTextBox.Size = new Size(cardTargets.Width - 232, 24);
-            cardTargets.Controls.Add(_customProcessesTextBox);
+            _customProcessesTextBox.Font = new Font("Consolas", 8.8F, FontStyle.Regular);
+            _customProcessesTextBox.Location = new Point(206, 83);
+            _customProcessesTextBox.Size = new Size(cardOptions.Width - 222, 22);
+            cardOptions.Controls.Add(_customProcessesTextBox);
 
             // ===== Footer =====
             _minimizeOnCloseCheckBox = new CheckBox();
             _minimizeOnCloseCheckBox.Text = "창 닫기(X) 시 트레이로 최소화";
             _minimizeOnCloseCheckBox.ForeColor = ThemeColors.TextSecondary;
             _minimizeOnCloseCheckBox.BackColor = ThemeColors.Background;
-            _minimizeOnCloseCheckBox.Font = new Font("Malgun Gothic", 8.8F, FontStyle.Regular);
-            _minimizeOnCloseCheckBox.Location = new Point(margin, 620);
+            _minimizeOnCloseCheckBox.Font = new Font("Malgun Gothic", 8.5F, FontStyle.Regular);
+            _minimizeOnCloseCheckBox.Location = new Point(margin, 696);
             _minimizeOnCloseCheckBox.AutoSize = true;
             Controls.Add(_minimizeOnCloseCheckBox);
 
-            _hideToTrayButton = new ModernButton();
-            _hideToTrayButton.Text = "트레이로 숨기기";
-            _hideToTrayButton.Font = new Font("Malgun Gothic", 8.8F, FontStyle.Bold);
-            _hideToTrayButton.Location = new Point(ClientSize.Width - margin - 122, 616);
-            _hideToTrayButton.Size = new Size(122, 28);
-            Controls.Add(_hideToTrayButton);
-
             _configPathLabel = new Label();
-            _configPathLabel.Text = "설정 파일: " + ShortenPath(_controller.SettingsPath, 58);
+            _configPathLabel.Text = "설정: " + ShortenPath(_controller.SettingsPath, 38);
             _configPathLabel.Font = new Font("Malgun Gothic", 7.8F, FontStyle.Regular);
             _configPathLabel.ForeColor = ThemeColors.TextDisabled;
             _configPathLabel.BackColor = ThemeColors.Background;
-            _configPathLabel.Location = new Point(margin, 650);
-            _configPathLabel.Size = new Size(cardWidth, 18);
+            _configPathLabel.TextAlign = ContentAlignment.MiddleCenter;
+            _configPathLabel.Location = new Point(214, 698);
+            _configPathLabel.Size = new Size(256, 18);
             Controls.Add(_configPathLabel);
 
+            _hideToTrayButton = new ModernButton();
+            _hideToTrayButton.Text = "트레이로 숨기기";
+            _hideToTrayButton.Font = new Font("Malgun Gothic", 8.6F, FontStyle.Bold);
+            _hideToTrayButton.Location = new Point(ClientSize.Width - margin - 118, 692);
+            _hideToTrayButton.Size = new Size(118, 28);
+            Controls.Add(_hideToTrayButton);
+
             ResumeLayout(false);
+        }
+
+        private void RebuildActionRows()
+        {
+            _actionsScrollPanel.SuspendLayout();
+            try
+            {
+                _actionsScrollPanel.Controls.Clear();
+                _actionRows.Clear();
+
+                List<ActionBindingItem> actions = _controller.GetActionsSnapshot();
+                int y = 6;
+                bool needsScroll = actions.Count > 7;
+                int rowWidth = _actionsScrollPanel.ClientSize.Width - (needsScroll ? SystemInformation.VerticalScrollBarWidth : 0) - 10;
+                if (rowWidth < 520)
+                {
+                    rowWidth = 540;
+                }
+
+                bool showedCustomHeader = false;
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    ActionBindingItem item = actions[i];
+                    if (item.IsCustom && !showedCustomHeader)
+                    {
+                        showedCustomHeader = true;
+                        Panel catPanel = new Panel();
+                        catPanel.Location = new Point(5, y);
+                        catPanel.Size = new Size(rowWidth, 24);
+                        catPanel.BackColor = ThemeColors.InputBg;
+
+                        Label catLabel = new Label();
+                        catLabel.Text = "▸  " + ActionBindingItem.CategoryCustom;
+                        catLabel.Font = new Font("Malgun Gothic", 8.5F, FontStyle.Bold);
+                        catLabel.ForeColor = ThemeColors.Gold;
+                        catLabel.BackColor = ThemeColors.InputBg;
+                        catLabel.Location = new Point(4, 4);
+                        catLabel.AutoSize = true;
+                        catPanel.Controls.Add(catLabel);
+
+                        Panel catLine = new Panel();
+                        catLine.BackColor = ThemeColors.Divider;
+                        catLine.Location = new Point(4, 22);
+                        catLine.Size = new Size(rowWidth - 8, 1);
+                        catPanel.Controls.Add(catLine);
+
+                        _actionsScrollPanel.Controls.Add(catPanel);
+                        y += 26;
+                    }
+
+                    ActionRowWidgets row = CreateActionRow(item, y, rowWidth);
+                    _actionsScrollPanel.Controls.Add(row.RowPanel);
+                    _actionRows[item.Id] = row;
+                    y += 35;
+                }
+
+                Panel spacer = new Panel();
+                spacer.Location = new Point(0, y);
+                spacer.Size = new Size(10, 4);
+                _actionsScrollPanel.Controls.Add(spacer);
+            }
+            finally
+            {
+                _actionsScrollPanel.ResumeLayout(true);
+            }
+        }
+
+        private ActionRowWidgets CreateActionRow(ActionBindingItem item, int y, int rowWidth)
+        {
+            string actionId = item.Id;
+            bool isCustom = item.IsCustom;
+
+            Panel rowPanel = new Panel();
+            rowPanel.Location = new Point(4, y);
+            rowPanel.Size = new Size(rowWidth, 31);
+            rowPanel.BackColor = item.Enabled ? Color.FromArgb(24, 42, 38) : Color.FromArgb(30, 33, 40);
+
+            Panel accentBar = new Panel();
+            accentBar.Location = new Point(0, 0);
+            accentBar.Size = new Size(3, 31);
+            accentBar.BackColor = item.Enabled ? ThemeColors.Emerald : Color.Transparent;
+            rowPanel.Controls.Add(accentBar);
+
+            CheckBox chk = new CheckBox();
+            chk.Location = new Point(10, 6);
+            chk.Size = new Size(18, 18);
+            chk.BackColor = rowPanel.BackColor;
+            chk.Checked = item.Enabled;
+            rowPanel.Controls.Add(chk);
+
+            Label nameLabel = new Label();
+            nameLabel.Text = item.Name;
+            nameLabel.Font = new Font("Malgun Gothic", 8.8F, item.Enabled ? FontStyle.Bold : FontStyle.Regular);
+            nameLabel.ForeColor = item.Enabled ? ThemeColors.TextPrimary : ThemeColors.TextSecondary;
+            nameLabel.BackColor = rowPanel.BackColor;
+            nameLabel.Location = new Point(32, 0);
+            nameLabel.Size = new Size(212, 31);
+            nameLabel.TextAlign = ContentAlignment.MiddleLeft;
+            nameLabel.Cursor = Cursors.Hand;
+            nameLabel.Click += delegate
+            {
+                chk.Checked = !chk.Checked;
+            };
+            rowPanel.Controls.Add(nameLabel);
+
+            Label keyBadge = new Label();
+            keyBadge.BackColor = ThemeColors.Background;
+            keyBadge.ForeColor = item.Binding != null ? ThemeColors.TextPrimary : ThemeColors.TextDisabled;
+            keyBadge.BorderStyle = BorderStyle.FixedSingle;
+            keyBadge.Font = new Font("Consolas", 8.8F, FontStyle.Bold);
+            keyBadge.TextAlign = ContentAlignment.MiddleCenter;
+            keyBadge.Location = new Point(250, 4);
+            keyBadge.Size = new Size(156, 23);
+            keyBadge.Text = item.Binding != null ? item.Binding.FormatBadgeText() : "미지정";
+            rowPanel.Controls.Add(keyBadge);
+
+            ModernButton changeBtn = new ModernButton();
+            changeBtn.Text = "키 변경";
+            changeBtn.Font = new Font("Malgun Gothic", 8.1F, FontStyle.Bold);
+            changeBtn.CornerRadius = 5;
+            changeBtn.Location = new Point(414, 3);
+            changeBtn.Size = new Size(72, 25);
+            rowPanel.Controls.Add(changeBtn);
+
+            ModernButton clearBtn = new ModernButton();
+            clearBtn.Text = isCustom ? "삭제" : "해제";
+            clearBtn.Font = new Font("Malgun Gothic", 8.1F, FontStyle.Regular);
+            clearBtn.CornerRadius = 5;
+            clearBtn.Location = new Point(492, 3);
+            clearBtn.Size = new Size(52, 25);
+            if (isCustom)
+            {
+                clearBtn.ForeColor = Color.FromArgb(248, 113, 113);
+            }
+            rowPanel.Controls.Add(clearBtn);
+
+            chk.CheckedChanged += delegate
+            {
+                if (_updatingUi) return;
+                string err;
+                bool ok = _controller.TrySetActionEnabled(actionId, chk.Checked, out err);
+                if (!ok)
+                {
+                    SetFeedback(err ?? "상태를 변경할 수 없습니다.", ThemeColors.Danger);
+                    SyncActionRowValuesFromController();
+                }
+                else
+                {
+                    SetFeedback(
+                        chk.Checked
+                            ? "'" + nameLabel.Text + "' 즉시 발동이 켜졌습니다."
+                            : "'" + nameLabel.Text + "' 즉시 발동이 꺼졌습니다 (원본 입력 통과).",
+                        chk.Checked ? ThemeColors.Emerald : ThemeColors.TextSecondary);
+                }
+            };
+
+            changeBtn.Click += delegate
+            {
+                if (_hookEngine.CurrentCaptureMode == CaptureMode.ActionKey &&
+                    string.Equals(_hookEngine.CaptureTargetActionId, actionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    _hookEngine.CancelCapture();
+                }
+                else
+                {
+                    StartActionKeyCapture(actionId, nameLabel.Text);
+                }
+            };
+
+            clearBtn.Click += delegate
+            {
+                _hookEngine.CancelCapture();
+                if (isCustom)
+                {
+                    _controller.RemoveCustomAction(actionId);
+                    RebuildActionRows();
+                    SyncUiFromController();
+                    SetFeedback("사용자 키 항목이 삭제되었습니다.", ThemeColors.TextSecondary);
+                }
+                else
+                {
+                    _controller.ClearActionKey(actionId);
+                    SetFeedback("'" + nameLabel.Text + "' 키 지정이 해제되었습니다.", ThemeColors.TextSecondary);
+                }
+            };
+
+            ActionRowWidgets widgets = new ActionRowWidgets();
+            widgets.ActionId = actionId;
+            widgets.IsCustom = isCustom;
+            widgets.RowPanel = rowPanel;
+            widgets.AccentBar = accentBar;
+            widgets.EnabledCheckBox = chk;
+            widgets.NameLabel = nameLabel;
+            widgets.KeyBadge = keyBadge;
+            widgets.ChangeKeyButton = changeBtn;
+            widgets.ClearOrDeleteButton = clearBtn;
+            return widgets;
+        }
+
+        private void SyncActionRowValuesFromController()
+        {
+            List<ActionBindingItem> actions = _controller.GetActionsSnapshot();
+            if (actions.Count != _actionRows.Count)
+            {
+                RebuildActionRows();
+            }
+
+            bool prevUpdating = _updatingUi;
+            _updatingUi = true;
+            try
+            {
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    ActionBindingItem item = actions[i];
+                    ActionRowWidgets row;
+                    if (!_actionRows.TryGetValue(item.Id, out row))
+                    {
+                        continue;
+                    }
+
+                    Color rowBg = item.Enabled ? Color.FromArgb(24, 42, 38) : Color.FromArgb(30, 33, 40);
+                    row.RowPanel.BackColor = rowBg;
+                    row.AccentBar.BackColor = item.Enabled ? ThemeColors.Emerald : Color.Transparent;
+                    row.EnabledCheckBox.BackColor = rowBg;
+                    row.EnabledCheckBox.Checked = item.Enabled;
+                    row.NameLabel.BackColor = rowBg;
+                    row.NameLabel.ForeColor = item.Enabled ? ThemeColors.TextPrimary : ThemeColors.TextSecondary;
+                    row.NameLabel.Font = new Font("Malgun Gothic", 8.8F, item.Enabled ? FontStyle.Bold : FontStyle.Regular);
+
+                    if (item.Binding != null)
+                    {
+                        row.KeyBadge.Text = item.Binding.FormatBadgeText();
+                        row.KeyBadge.ForeColor = item.Enabled ? ThemeColors.Emerald : ThemeColors.TextPrimary;
+                    }
+                    else
+                    {
+                        row.KeyBadge.Text = "미지정";
+                        row.KeyBadge.ForeColor = ThemeColors.TextDisabled;
+                    }
+
+                    bool isCapturingThis = (_hookEngine.CurrentCaptureMode == CaptureMode.ActionKey &&
+                        string.Equals(_hookEngine.CaptureTargetActionId, item.Id, StringComparison.OrdinalIgnoreCase));
+                    row.ChangeKeyButton.Text = isCapturingThis ? "대기 중..." : "키 변경";
+                }
+            }
+            finally
+            {
+                _updatingUi = prevUpdating;
+            }
         }
 
         private void InitializeTrayIcon()
@@ -523,15 +821,36 @@ namespace EldenInstantRoll
                 }
             };
 
-            _rollKeyButton.Click += delegate
+            _addCustomButton.Click += delegate
             {
-                if (_hookEngine.CurrentCaptureMode == CaptureMode.RollKey)
+                _hookEngine.CancelCapture();
+                ActionBindingItem added = _controller.AddCustomAction(null);
+                RebuildActionRows();
+                SyncUiFromController();
+
+                ActionRowWidgets row;
+                if (_actionRows.TryGetValue(added.Id, out row))
                 {
-                    _hookEngine.CancelCapture();
+                    _actionsScrollPanel.ScrollControlIntoView(row.RowPanel);
                 }
-                else
+                StartActionKeyCapture(added.Id, added.Name);
+            };
+
+            _resetDefaultsButton.Click += delegate
+            {
+                _hookEngine.CancelCapture();
+                DialogResult result = MessageBox.Show(
+                    this,
+                    "모든 액션 키와 체크 상태를 엘밤통 기본값으로 초기화할까요?\n(사용자 추가 키 항목도 함께 삭제됩니다.)",
+                    "기본값 초기화",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+                if (result == DialogResult.Yes)
                 {
-                    StartCapture(CaptureMode.RollKey);
+                    _controller.ResetActionsToDefaults();
+                    RebuildActionRows();
+                    SyncUiFromController();
+                    SetFeedback("엘밤통 기본 키 목록으로 초기화되었습니다.", ThemeColors.Gold);
                 }
             };
 
@@ -543,7 +862,7 @@ namespace EldenInstantRoll
                 }
                 else
                 {
-                    StartCapture(CaptureMode.ToggleHotkey);
+                    StartToggleHotkeyCapture();
                 }
             };
 
@@ -596,62 +915,67 @@ namespace EldenInstantRoll
                 _customProcessesTextBox.Text);
         }
 
-        private void StartCapture(CaptureMode mode)
+        private void StartActionKeyCapture(string actionId, string actionName)
         {
-            _hookEngine.BeginCapture(mode);
+            _hookEngine.BeginActionKeyCapture(actionId);
+            _toggleHotkeyButton.Text = "변경";
+            SyncActionRowValuesFromController();
+            SetFeedback(
+                "[" + actionName + "] 원하는 키 또는 마우스 버튼(좌/우/휠/Mouse4/Mouse5)을 누르세요... (ESC 취소)",
+                ThemeColors.Gold);
+        }
 
-            if (mode == CaptureMode.RollKey)
-            {
-                _rollKeyButton.Text = "입력 대기...";
-                _toggleHotkeyButton.Text = "단축키 변경";
-                _keyFeedbackLabel.ForeColor = ThemeColors.Gold;
-                _keyFeedbackLabel.Text = "원하는 키(또는 Mouse4/Mouse5/휠클릭)를 누르세요... (ESC 취소)";
-            }
-            else if (mode == CaptureMode.ToggleHotkey)
-            {
-                _toggleHotkeyButton.Text = "입력 대기...";
-                _rollKeyButton.Text = "키 변경";
-                _keyFeedbackLabel.ForeColor = ThemeColors.Gold;
-                _keyFeedbackLabel.Text = "원하는 ON/OFF 단축키(키보드)를 누르세요... (ESC 취소)";
-            }
+        private void StartToggleHotkeyCapture()
+        {
+            _hookEngine.BeginToggleHotkeyCapture();
+            _toggleHotkeyButton.Text = "대기...";
+            SyncActionRowValuesFromController();
+            SetFeedback("원하는 ON/OFF 단축키(키보드)를 누르세요... (ESC 취소)", ThemeColors.Gold);
         }
 
         private void HandleKeyCaptured(KeyCapturedEventArgs args)
         {
-            _rollKeyButton.Text = "키 변경";
-            _toggleHotkeyButton.Text = "단축키 변경";
+            _toggleHotkeyButton.Text = "변경";
             _hookEngine.RefreshMouseHookState();
+            SyncActionRowValuesFromController();
 
             if (args.Cancelled || args.CapturedBinding == null)
             {
-                _keyFeedbackLabel.ForeColor = ThemeColors.TextSecondary;
-                _keyFeedbackLabel.Text = "키 변경이 취소되었습니다.";
+                SetFeedback("키 변경이 취소되었습니다.", ThemeColors.TextSecondary);
                 return;
             }
 
             string error;
-            bool ok;
-            if (args.Mode == CaptureMode.RollKey)
+            if (args.Mode == CaptureMode.ActionKey)
             {
-                ok = _controller.TrySetRollKey(args.CapturedBinding, out error);
+                bool ok = _controller.TrySetActionKey(args.TargetActionId, args.CapturedBinding, out error);
+                if (ok)
+                {
+                    SetFeedback("키가 [" + args.CapturedBinding.FormatBadgeText() + "]로 저장되었습니다.", ThemeColors.Emerald);
+                }
+                else
+                {
+                    SetFeedback(error ?? "키를 변경할 수 없습니다.", ThemeColors.Danger);
+                }
             }
-            else
+            else if (args.Mode == CaptureMode.ToggleHotkey)
             {
-                ok = _controller.TrySetToggleHotkey(args.CapturedBinding, out error);
+                bool ok = _controller.TrySetToggleHotkey(args.CapturedBinding, out error);
+                if (ok)
+                {
+                    SetFeedback("ON/OFF 단축키가 [" + args.CapturedBinding.FormatBadgeText() + "]로 저장되었습니다.", ThemeColors.Emerald);
+                }
+                else
+                {
+                    SetFeedback(error ?? "단축키를 변경할 수 없습니다.", ThemeColors.Danger);
+                }
             }
+        }
 
-            if (ok)
-            {
-                _keyFeedbackLabel.ForeColor = ThemeColors.Emerald;
-                _keyFeedbackLabel.Text = args.Mode == CaptureMode.RollKey
-                    ? "구르기 키가 [" + args.CapturedBinding.FormatBadgeText() + "]로 저장되었습니다."
-                    : "ON/OFF 단축키가 [" + args.CapturedBinding.FormatBadgeText() + "]로 저장되었습니다.";
-            }
-            else
-            {
-                _keyFeedbackLabel.ForeColor = ThemeColors.Danger;
-                _keyFeedbackLabel.Text = error ?? "키를 변경할 수 없습니다.";
-            }
+        private void SetFeedback(string message, Color color)
+        {
+            _actionFeedbackLabel.ForeColor = color;
+            _actionFeedbackLabel.Text = message;
         }
 
         private void OnControllerStateChanged()
@@ -683,7 +1007,12 @@ namespace EldenInstantRoll
                 _autoStartTitleLabel.ForeColor = childEnabled ? ThemeColors.TextPrimary : ThemeColors.TextDisabled;
                 _autoStartDescLabel.ForeColor = childEnabled ? ThemeColors.TextSecondary : ThemeColors.TextDisabled;
 
-                _rollKeyBadge.Text = _controller.RollKey.FormatBadgeText();
+                string summary = _controller.FormatActiveKeysSummary(3);
+                _activeSummaryLabel.Text = summary;
+                _activeSummaryLabel.ForeColor = _controller.GetActiveActionCount() > 0 ? ThemeColors.Emerald : ThemeColors.TextSecondary;
+                _listActiveCountLabel.Text = _controller.FormatActiveKeysSummary(1);
+                _listActiveCountLabel.ForeColor = _controller.GetActiveActionCount() > 0 ? ThemeColors.Emerald : ThemeColors.TextSecondary;
+
                 _toggleHotkeyBadge.Text = _controller.ToggleHotkey.FormatBadgeText();
 
                 int delay = AppSettings.ClampTapDelay(_controller.TapDelayMs);
@@ -709,6 +1038,7 @@ namespace EldenInstantRoll
                 _updatingUi = false;
             }
 
+            SyncActionRowValuesFromController();
             UpdateLiveStatusIndicators(_controller.LastForegroundProcess);
         }
 
@@ -751,9 +1081,9 @@ namespace EldenInstantRoll
                 : (state == EngineRunState.WaitingForGame ? "게임 대기 중" : "꺼짐");
             string tooltip = string.Format(
                 CultureInfo.InvariantCulture,
-                "콩벌레 (EldenInstantRoll) [{0}] {1} | {2}",
+                "콩벌레 [{0}] {1} | {2}",
                 statusKo,
-                _controller.RollKey.FormatShortText(),
+                _controller.FormatCompactActiveKeysForTray(),
                 _controller.ToggleHotkey.FormatShortText());
             if (tooltip.Length > 63)
             {

@@ -8,6 +8,7 @@ namespace EldenInstantRoll
 {
     public sealed class AppSettings
     {
+        public const int CurrentConfigVersion = 2;
         public const int MinTapDelayMs = 15;
         public const int MaxTapDelayMs = 60;
         public const int DefaultTapDelayMs = 25;
@@ -15,13 +16,17 @@ namespace EldenInstantRoll
         public const string NightreignProcessName = "nightreign.exe";
         public const string EldenRingProcessName = "eldenring.exe";
 
+        public int ConfigVersion { get; set; }
+        public bool MigratedFromV1 { get; private set; }
+
         public bool MasterEnabled { get; set; }
         public bool AutoEnableOnGame { get; set; }
         public bool AutoStartWithWindows { get; set; }
 
-        public KeyBinding RollKey { get; set; }
         public KeyBinding ToggleHotkey { get; set; }
         public int TapDelayMs { get; set; }
+
+        public List<ActionBindingItem> Actions { get; set; }
 
         public bool TargetNightreign { get; set; }
         public bool TargetEldenRing { get; set; }
@@ -31,13 +36,15 @@ namespace EldenInstantRoll
 
         public AppSettings()
         {
+            ConfigVersion = CurrentConfigVersion;
             MasterEnabled = true;
             AutoEnableOnGame = true;
             AutoStartWithWindows = false;
 
-            RollKey = KeyBinding.DefaultRollKey();
             ToggleHotkey = KeyBinding.DefaultToggleHotkey();
             TapDelayMs = DefaultTapDelayMs;
+
+            Actions = ActionBindingItem.CreateDefaultNightreignActions();
 
             TargetNightreign = true;
             TargetEldenRing = true;
@@ -57,6 +64,22 @@ namespace EldenInstantRoll
                 return MaxTapDelayMs;
             }
             return ms;
+        }
+
+        public ActionBindingItem FindAction(string id)
+        {
+            if (Actions == null || string.IsNullOrEmpty(id))
+            {
+                return null;
+            }
+            for (int i = 0; i < Actions.Count; i++)
+            {
+                if (string.Equals(Actions[i].Id, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Actions[i];
+                }
+            }
+            return null;
         }
 
         public HashSet<string> GetTargetProcessSet()
@@ -146,6 +169,9 @@ namespace EldenInstantRoll
                 return settings;
             }
 
+            bool hasV2Actions = false;
+            KeyBinding legacyRollKey = null;
+
             try
             {
                 string[] lines = File.ReadAllLines(path, Encoding.UTF8);
@@ -166,7 +192,15 @@ namespace EldenInstantRoll
                     string key = line.Substring(0, eq).Trim();
                     string val = line.Substring(eq + 1).Trim();
 
-                    if (key.Equals("MasterEnabled", StringComparison.OrdinalIgnoreCase))
+                    if (key.Equals("ConfigVersion", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int ver;
+                        if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out ver))
+                        {
+                            settings.ConfigVersion = ver;
+                        }
+                    }
+                    else if (key.Equals("MasterEnabled", StringComparison.OrdinalIgnoreCase))
                     {
                         settings.MasterEnabled = ParseBool(val, settings.MasterEnabled);
                     }
@@ -183,7 +217,7 @@ namespace EldenInstantRoll
                         KeyBinding parsed;
                         if (KeyBinding.TryParse(val, out parsed))
                         {
-                            settings.RollKey = parsed;
+                            legacyRollKey = parsed;
                         }
                     }
                     else if (key.Equals("ToggleHotkey", StringComparison.OrdinalIgnoreCase))
@@ -218,6 +252,26 @@ namespace EldenInstantRoll
                     {
                         settings.MinimizeToTrayOnClose = ParseBool(val, settings.MinimizeToTrayOnClose);
                     }
+                    else if (key.StartsWith("Action.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasV2Actions = true;
+                        string actionId = key.Substring(7).Trim();
+                        ActionBindingItem item = settings.FindAction(actionId);
+                        if (item != null)
+                        {
+                            ApplyActionValue(item, val);
+                        }
+                    }
+                    else if (key.StartsWith("Custom.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasV2Actions = true;
+                        string customId = key.Substring(7).Trim();
+                        ActionBindingItem custom = ParseCustomAction(customId, val);
+                        if (custom != null && settings.FindAction(custom.Id) == null)
+                        {
+                            settings.Actions.Add(custom);
+                        }
+                    }
                 }
             }
             catch
@@ -225,15 +279,20 @@ namespace EldenInstantRoll
                 // Return defaults on corrupted file
             }
 
-            // Prevent RollKey and ToggleHotkey conflict on load
-            if (settings.RollKey != null && settings.RollKey.Equals(settings.ToggleHotkey))
+            // Automatic v1.0.0 -> v1.1.0 migration
+            if (!hasV2Actions && legacyRollKey != null)
             {
-                settings.ToggleHotkey = KeyBinding.DefaultToggleHotkey();
-                if (settings.RollKey.Equals(settings.ToggleHotkey))
+                ActionBindingItem dodge = settings.FindAction(ActionBindingItem.DodgeActionId);
+                if (dodge != null)
                 {
-                    settings.RollKey = KeyBinding.DefaultRollKey();
+                    dodge.Binding = legacyRollKey;
+                    dodge.Enabled = true;
                 }
+                settings.ConfigVersion = CurrentConfigVersion;
+                settings.MigratedFromV1 = true;
             }
+
+            SanitizeActiveBindings(settings);
 
             // Enforce Master priority rule even if INI was manually edited
             if (!settings.MasterEnabled)
@@ -243,6 +302,110 @@ namespace EldenInstantRoll
             }
 
             return settings;
+        }
+
+        private static void ApplyActionValue(ActionBindingItem item, string rawValue)
+        {
+            // Format: <1|0>|<serializedKey or NONE>
+            // Note: serialized keyboard keys contain a pipe like KEY:0010:0|Q, so split ONLY on first pipe.
+            int firstPipe = rawValue.IndexOf('|');
+            if (firstPipe <= 0)
+            {
+                return;
+            }
+
+            string enabledPart = rawValue.Substring(0, firstPipe).Trim();
+            string keyPart = rawValue.Substring(firstPipe + 1).Trim();
+
+            bool enabled = ParseBool(enabledPart, false);
+            if (keyPart.Equals("NONE", StringComparison.OrdinalIgnoreCase) || keyPart.Length == 0)
+            {
+                item.Binding = null;
+                item.Enabled = false;
+            }
+            else
+            {
+                KeyBinding parsed;
+                if (KeyBinding.TryParse(keyPart, out parsed))
+                {
+                    item.Binding = parsed;
+                    item.Enabled = enabled;
+                }
+            }
+        }
+
+        private static ActionBindingItem ParseCustomAction(string customId, string rawValue)
+        {
+            // Format: <1|0>|<nameEscaped>;<serializedKey or NONE>
+            if (string.IsNullOrEmpty(customId) || string.IsNullOrEmpty(rawValue))
+            {
+                return null;
+            }
+
+            int firstPipe = rawValue.IndexOf('|');
+            if (firstPipe <= 0)
+            {
+                return null;
+            }
+
+            bool enabled = ParseBool(rawValue.Substring(0, firstPipe).Trim(), false);
+            string rest = rawValue.Substring(firstPipe + 1);
+            int semi = rest.IndexOf(';');
+            if (semi < 0)
+            {
+                return null;
+            }
+
+            string name = UnescapeField(rest.Substring(0, semi).Trim());
+            if (string.IsNullOrEmpty(name))
+            {
+                name = "사용자 키";
+            }
+
+            string keyPart = rest.Substring(semi + 1).Trim();
+            KeyBinding binding = null;
+            if (!keyPart.Equals("NONE", StringComparison.OrdinalIgnoreCase) && keyPart.Length > 0)
+            {
+                KeyBinding parsed;
+                if (KeyBinding.TryParse(keyPart, out parsed))
+                {
+                    binding = parsed;
+                }
+            }
+
+            return new ActionBindingItem(customId, ActionBindingItem.CategoryCustom, name, binding != null && enabled, binding, true);
+        }
+
+        private static void SanitizeActiveBindings(AppSettings settings)
+        {
+            if (settings.ToggleHotkey == null || settings.ToggleHotkey.Kind != BindingKind.Keyboard)
+            {
+                settings.ToggleHotkey = KeyBinding.DefaultToggleHotkey();
+            }
+
+            HashSet<KeyBinding> seenActive = new HashSet<KeyBinding>();
+            for (int i = 0; i < settings.Actions.Count; i++)
+            {
+                ActionBindingItem item = settings.Actions[i];
+                if (!item.Enabled)
+                {
+                    continue;
+                }
+                if (item.Binding == null)
+                {
+                    item.Enabled = false;
+                    continue;
+                }
+                if (item.Binding.Equals(settings.ToggleHotkey))
+                {
+                    item.Enabled = false;
+                    continue;
+                }
+                if (!seenActive.Add(item.Binding))
+                {
+                    item.Enabled = false;
+                }
+            }
         }
 
         public bool SaveToFile(string path)
@@ -261,17 +424,36 @@ namespace EldenInstantRoll
                 }
 
                 StringBuilder sb = new StringBuilder();
-                sb.AppendLine("; EldenInstantRoll Portable Configuration");
+                sb.AppendLine("; EldenInstantRoll (v1.1.0) Portable Configuration");
                 sb.AppendLine("[General]");
+                sb.AppendLine("ConfigVersion=" + CurrentConfigVersion.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("MasterEnabled=" + (MasterEnabled ? "true" : "false"));
                 sb.AppendLine("AutoEnableOnGame=" + (AutoEnableOnGame ? "true" : "false"));
                 sb.AppendLine("AutoStartWithWindows=" + (AutoStartWithWindows ? "true" : "false"));
                 sb.AppendLine("MinimizeToTrayOnClose=" + (MinimizeToTrayOnClose ? "true" : "false"));
                 sb.AppendLine();
                 sb.AppendLine("[Input]");
-                sb.AppendLine("RollKey=" + (RollKey != null ? RollKey.Serialize() : KeyBinding.DefaultRollKey().Serialize()));
                 sb.AppendLine("ToggleHotkey=" + (ToggleHotkey != null ? ToggleHotkey.Serialize() : KeyBinding.DefaultToggleHotkey().Serialize()));
                 sb.AppendLine("TapDelayMs=" + ClampTapDelay(TapDelayMs).ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine();
+                sb.AppendLine("[Actions]");
+                if (Actions != null)
+                {
+                    for (int i = 0; i < Actions.Count; i++)
+                    {
+                        ActionBindingItem item = Actions[i];
+                        string keyStr = item.Binding != null ? item.Binding.Serialize() : "NONE";
+                        string enabledStr = (item.Enabled && item.Binding != null) ? "1" : "0";
+                        if (item.IsCustom)
+                        {
+                            sb.AppendLine("Custom." + item.Id + "=" + enabledStr + "|" + EscapeField(item.Name) + ";" + keyStr);
+                        }
+                        else
+                        {
+                            sb.AppendLine("Action." + item.Id + "=" + enabledStr + "|" + keyStr);
+                        }
+                    }
+                }
                 sb.AppendLine();
                 sb.AppendLine("[Targets]");
                 sb.AppendLine("TargetNightreign=" + (TargetNightreign ? "true" : "false"));
@@ -285,6 +467,24 @@ namespace EldenInstantRoll
             {
                 return false;
             }
+        }
+
+        private static string EscapeField(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+            return text.Replace("%", "%25").Replace(";", "%3B").Replace("|", "%7C").Replace("\r", " ").Replace("\n", " ");
+        }
+
+        private static string UnescapeField(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+            return text.Replace("%7C", "|").Replace("%3B", ";").Replace("%25", "%");
         }
 
         private static bool ParseBool(string value, bool fallback)

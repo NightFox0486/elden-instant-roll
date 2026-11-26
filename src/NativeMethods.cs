@@ -18,6 +18,10 @@ namespace EldenInstantRoll
 
         // Mouse messages
         internal const int WM_MOUSEMOVE = 0x0200;
+        internal const int WM_LBUTTONDOWN = 0x0201;
+        internal const int WM_LBUTTONUP = 0x0202;
+        internal const int WM_RBUTTONDOWN = 0x0204;
+        internal const int WM_RBUTTONUP = 0x0205;
         internal const int WM_MBUTTONDOWN = 0x0207;
         internal const int WM_MBUTTONUP = 0x0208;
         internal const int WM_XBUTTONDOWN = 0x020B;
@@ -34,6 +38,10 @@ namespace EldenInstantRoll
         internal const uint KEYEVENTF_KEYUP = 0x0002;
         internal const uint KEYEVENTF_SCANCODE = 0x0008;
 
+        internal const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        internal const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        internal const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+        internal const uint MOUSEEVENTF_RIGHTUP = 0x0010;
         internal const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
         internal const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
         internal const uint MOUSEEVENTF_XDOWN = 0x0080;

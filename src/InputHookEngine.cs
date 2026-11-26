@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -8,19 +9,21 @@ namespace EldenInstantRoll
     public enum CaptureMode
     {
         None = 0,
-        RollKey = 1,
+        ActionKey = 1,
         ToggleHotkey = 2
     }
 
     public sealed class KeyCapturedEventArgs : EventArgs
     {
         public CaptureMode Mode { get; private set; }
+        public string TargetActionId { get; private set; }
         public KeyBinding CapturedBinding { get; private set; }
         public bool Cancelled { get; private set; }
 
-        public KeyCapturedEventArgs(CaptureMode mode, KeyBinding binding, bool cancelled)
+        public KeyCapturedEventArgs(CaptureMode mode, string targetActionId, KeyBinding binding, bool cancelled)
         {
             Mode = mode;
+            TargetActionId = targetActionId;
             CapturedBinding = binding;
             Cancelled = cancelled;
         }
@@ -38,7 +41,13 @@ namespace EldenInstantRoll
         private IntPtr _mouseHook = IntPtr.Zero;
 
         private volatile CaptureMode _captureMode = CaptureMode.None;
-        private bool _rollKeyHeld;
+        private volatile string _captureTargetActionId;
+
+        // Independent per-key held state tracking for multi-key simultaneous operation
+        private readonly object _heldLock = new object();
+        private readonly HashSet<uint> _heldKeyboardKeys = new HashSet<uint>();
+        private readonly HashSet<MouseBindButton> _heldMouseButtons = new HashSet<MouseBindButton>();
+        private MouseBindButton _suppressNextMouseUp = MouseBindButton.None;
         private bool _toggleHotkeyHeld;
 
         // Cached foreground HWND -> process name for ultra-fast hook checks
@@ -63,17 +72,35 @@ namespace EldenInstantRoll
             get { return _captureMode; }
         }
 
+        public string CaptureTargetActionId
+        {
+            get { return _captureTargetActionId; }
+        }
+
+        public bool IsMouseHookInstalled
+        {
+            get { return _mouseHook != IntPtr.Zero; }
+        }
+
         public void Start()
         {
             InstallKeyboardHook();
             RefreshMouseHookState();
         }
 
-        public void BeginCapture(CaptureMode mode)
+        public void BeginActionKeyCapture(string actionId)
         {
-            _captureMode = mode;
-            _rollKeyHeld = false;
-            _toggleHotkeyHeld = false;
+            _captureTargetActionId = actionId;
+            _captureMode = CaptureMode.ActionKey;
+            ResetHeldStates();
+            RefreshMouseHookState();
+        }
+
+        public void BeginToggleHotkeyCapture()
+        {
+            _captureTargetActionId = null;
+            _captureMode = CaptureMode.ToggleHotkey;
+            ResetHeldStates();
             RefreshMouseHookState();
         }
 
@@ -82,20 +109,22 @@ namespace EldenInstantRoll
             if (_captureMode != CaptureMode.None)
             {
                 CaptureMode previous = _captureMode;
+                string prevAction = _captureTargetActionId;
                 _captureMode = CaptureMode.None;
+                _captureTargetActionId = null;
                 RefreshMouseHookState();
-                RaiseKeyCaptured(previous, null, true);
+                RaiseKeyCaptured(previous, prevAction, null, true);
             }
         }
 
         public void RefreshMouseHookState()
         {
-            bool needMouse = _controller.NeedsMouseHook(_captureMode == CaptureMode.RollKey);
+            bool needMouse = _controller.NeedsMouseHook(_captureMode == CaptureMode.ActionKey);
             if (needMouse)
             {
                 InstallMouseHook();
             }
-            else
+            else if (_suppressNextMouseUp == MouseBindButton.None)
             {
                 UninstallMouseHook();
             }
@@ -115,8 +144,12 @@ namespace EldenInstantRoll
 
         public void ResetHeldStates()
         {
-            _rollKeyHeld = false;
-            _toggleHotkeyHeld = false;
+            lock (_heldLock)
+            {
+                _heldKeyboardKeys.Clear();
+                _heldMouseButtons.Clear();
+                _toggleHotkeyHeld = false;
+            }
         }
 
         private void InstallKeyboardHook()
@@ -179,30 +212,33 @@ namespace EldenInstantRoll
                     ushort scanCode = (ushort)(kbd.scanCode & 0xFFFF);
                     bool isExtended = (kbd.flags & NativeMethods.LLKHF_EXTENDED) != 0;
 
-                    // 1) Key capture mode (Roll Key or Toggle Hotkey)
+                    // 1) Key capture mode (Action Key or Toggle Hotkey)
                     CaptureMode capMode = _captureMode;
                     if (capMode != CaptureMode.None)
                     {
                         if (isDown)
                         {
+                            string targetAction = _captureTargetActionId;
                             _captureMode = CaptureMode.None;
+                            _captureTargetActionId = null;
+
                             // ESC (sc001) cancels key capture
                             if (scanCode == 0x01 && !isExtended)
                             {
-                                RaiseKeyCaptured(capMode, null, true);
+                                RaiseKeyCaptured(capMode, targetAction, null, true);
                             }
                             else if (scanCode != 0)
                             {
                                 KeyBinding captured = KeyBinding.FromKeyboard(scanCode, isExtended, null);
-                                RaiseKeyCaptured(capMode, captured, false);
+                                RaiseKeyCaptured(capMode, targetAction, captured, false);
                             }
                             else
                             {
-                                // Unknown zero scanCode: restore capture mode
+                                // Unknown zero scanCode: keep waiting
                                 _captureMode = capMode;
+                                _captureTargetActionId = targetAction;
                             }
                         }
-                        // Suppress key while capturing
                         return (IntPtr)1;
                     }
 
@@ -212,46 +248,68 @@ namespace EldenInstantRoll
                     {
                         if (isDown)
                         {
-                            if (!_toggleHotkeyHeld)
+                            bool trigger = false;
+                            lock (_heldLock)
                             {
-                                _toggleHotkeyHeld = true;
+                                if (!_toggleHotkeyHeld)
+                                {
+                                    _toggleHotkeyHeld = true;
+                                    trigger = true;
+                                }
+                            }
+                            if (trigger)
+                            {
                                 RaiseToggleHotkeyPressed();
                             }
                         }
                         else if (isUp)
                         {
-                            _toggleHotkeyHeld = false;
+                            lock (_heldLock)
+                            {
+                                _toggleHotkeyHeld = false;
+                            }
                         }
                         return (IntPtr)1;
                     }
 
-                    // 3) Instant Roll key handling (keyboard)
-                    KeyBinding rollKey = _controller.RollKey;
-                    if (rollKey != null && rollKey.MatchesKeyboard(scanCode, isExtended))
+                    // 3) Multi-key Instant Tap handling (ONLY checked/active keyboard keys!)
+                    uint compositeId = KeyBinding.MakeKeyboardCompositeId(scanCode, isExtended);
+                    if (isDown)
                     {
-                        if (isDown)
+                        lock (_heldLock)
                         {
-                            if (_rollKeyHeld)
+                            if (_heldKeyboardKeys.Contains(compositeId))
                             {
-                                // Suppress Windows key auto-repeat while physically holding the roll key
-                                return (IntPtr)1;
-                            }
-
-                            if (_controller.MasterEnabled && ShouldInterceptNow())
-                            {
-                                _rollKeyHeld = true;
-                                DispatchKeyboardTapAsync(rollKey.ScanCode, rollKey.IsExtended, _controller.TapDelayMs);
+                                // Suppress Windows key auto-repeat while physically holding this key
                                 return (IntPtr)1;
                             }
                         }
-                        else if (isUp)
+
+                        if (_controller.MasterEnabled)
                         {
-                            if (_rollKeyHeld)
+                            ActiveHookSnapshot snap = _controller.GetActiveHookSnapshot();
+                            if (snap != null && snap.KeyboardBindings.ContainsKey(compositeId) && ShouldInterceptNow())
                             {
-                                _rollKeyHeld = false;
-                                // Consume physical key-up because our synthetic tap already sent key-up
+                                lock (_heldLock)
+                                {
+                                    _heldKeyboardKeys.Add(compositeId);
+                                }
+                                DispatchKeyboardTapAsync(scanCode, isExtended, _controller.TapDelayMs);
                                 return (IntPtr)1;
                             }
+                        }
+                    }
+                    else if (isUp)
+                    {
+                        bool wasHeld;
+                        lock (_heldLock)
+                        {
+                            wasHeld = _heldKeyboardKeys.Remove(compositeId);
+                        }
+                        if (wasHeld)
+                        {
+                            // Consume physical key-up because our synthetic tap already sent key-up
+                            return (IntPtr)1;
                         }
                     }
                 }
@@ -276,7 +334,27 @@ namespace EldenInstantRoll
                 bool isUp = false;
                 MouseBindButton button = MouseBindButton.None;
 
-                if (msg == NativeMethods.WM_MBUTTONDOWN)
+                if (msg == NativeMethods.WM_LBUTTONDOWN)
+                {
+                    isDown = true;
+                    button = MouseBindButton.MouseLeft;
+                }
+                else if (msg == NativeMethods.WM_LBUTTONUP)
+                {
+                    isUp = true;
+                    button = MouseBindButton.MouseLeft;
+                }
+                else if (msg == NativeMethods.WM_RBUTTONDOWN)
+                {
+                    isDown = true;
+                    button = MouseBindButton.MouseRight;
+                }
+                else if (msg == NativeMethods.WM_RBUTTONUP)
+                {
+                    isUp = true;
+                    button = MouseBindButton.MouseRight;
+                }
+                else if (msg == NativeMethods.WM_MBUTTONDOWN)
                 {
                     isDown = true;
                     button = MouseBindButton.Middle;
@@ -288,16 +366,16 @@ namespace EldenInstantRoll
                 }
                 else if (msg == NativeMethods.WM_XBUTTONDOWN || msg == NativeMethods.WM_XBUTTONUP)
                 {
-                    NativeMethods.MSLLHOOKSTRUCT ms = (NativeMethods.MSLLHOOKSTRUCT)Marshal.PtrToStructure(
+                    NativeMethods.MSLLHOOKSTRUCT msX = (NativeMethods.MSLLHOOKSTRUCT)Marshal.PtrToStructure(
                         lParam,
                         typeof(NativeMethods.MSLLHOOKSTRUCT));
 
-                    if (ms.dwExtraInfo == NativeMethods.MAGIC_EXTRA_INFO)
+                    if (msX.dwExtraInfo == NativeMethods.MAGIC_EXTRA_INFO)
                     {
                         return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
                     }
 
-                    uint xButton = (ms.mouseData >> 16) & 0xFFFF;
+                    uint xButton = (msX.mouseData >> 16) & 0xFFFF;
                     if (xButton == NativeMethods.XBUTTON1)
                     {
                         button = MouseBindButton.Mouse4;
@@ -313,8 +391,8 @@ namespace EldenInstantRoll
 
                 if (button != MouseBindButton.None)
                 {
-                    // For Middle button, still verify MAGIC_EXTRA_INFO
-                    if (button == MouseBindButton.Middle)
+                    // For non-X buttons, verify MAGIC_EXTRA_INFO before processing
+                    if (button != MouseBindButton.Mouse4 && button != MouseBindButton.Mouse5)
                     {
                         NativeMethods.MSLLHOOKSTRUCT ms = (NativeMethods.MSLLHOOKSTRUCT)Marshal.PtrToStructure(
                             lParam,
@@ -325,42 +403,63 @@ namespace EldenInstantRoll
                         }
                     }
 
-                    // 1) Roll key capture mode accepts Mouse4 / Mouse5 / Middle
-                    if (_captureMode == CaptureMode.RollKey)
+                    // Consume trailing button-up right after capturing a mouse button
+                    if (isUp && _suppressNextMouseUp == button)
+                    {
+                        _suppressNextMouseUp = MouseBindButton.None;
+                        RefreshMouseHookState();
+                        return (IntPtr)1;
+                    }
+
+                    // 1) Action key capture mode accepts MouseLeft / MouseRight / Middle / Mouse4 / Mouse5
+                    if (_captureMode == CaptureMode.ActionKey)
                     {
                         if (isDown)
                         {
+                            string targetAction = _captureTargetActionId;
                             _captureMode = CaptureMode.None;
-                            RaiseKeyCaptured(CaptureMode.RollKey, KeyBinding.FromMouse(button), false);
+                            _captureTargetActionId = null;
+                            _suppressNextMouseUp = button;
+                            RaiseKeyCaptured(CaptureMode.ActionKey, targetAction, KeyBinding.FromMouse(button), false);
                         }
                         return (IntPtr)1;
                     }
 
-                    // 2) Instant Roll key handling (mouse)
-                    KeyBinding rollKey = _controller.RollKey;
-                    if (rollKey != null && rollKey.MatchesMouse(button))
+                    // 2) Multi-key Instant Tap handling (ONLY checked/active mouse buttons!)
+                    if (isDown)
                     {
-                        if (isDown)
+                        lock (_heldLock)
                         {
-                            if (_rollKeyHeld)
+                            if (_heldMouseButtons.Contains(button))
                             {
                                 return (IntPtr)1;
                             }
+                        }
 
-                            if (_controller.MasterEnabled && ShouldInterceptNow())
+                        if (_controller.MasterEnabled)
+                        {
+                            ActiveHookSnapshot snap = _controller.GetActiveHookSnapshot();
+                            if (snap != null && snap.MouseButtons.Contains(button) && ShouldInterceptNow())
                             {
-                                _rollKeyHeld = true;
+                                lock (_heldLock)
+                                {
+                                    _heldMouseButtons.Add(button);
+                                }
                                 DispatchMouseTapAsync(button, _controller.TapDelayMs);
                                 return (IntPtr)1;
                             }
                         }
-                        else if (isUp)
+                    }
+                    else if (isUp)
+                    {
+                        bool wasHeld;
+                        lock (_heldLock)
                         {
-                            if (_rollKeyHeld)
-                            {
-                                _rollKeyHeld = false;
-                                return (IntPtr)1;
-                            }
+                            wasHeld = _heldMouseButtons.Remove(button);
+                        }
+                        if (wasHeld)
+                        {
+                            return (IntPtr)1;
                         }
                     }
                 }
@@ -377,7 +476,7 @@ namespace EldenInstantRoll
             }
 
             string fgProc = RefreshForegroundProcess();
-            return _controller.ShouldInterceptRollForProcess(fgProc);
+            return _controller.ShouldInterceptForProcess(fgProc);
         }
 
         private static void DispatchKeyboardTapAsync(ushort scanCode, bool isExtended, int delayMs)
@@ -437,7 +536,17 @@ namespace EldenInstantRoll
             uint upFlag;
             uint mouseData = 0;
 
-            if (button == MouseBindButton.Middle)
+            if (button == MouseBindButton.MouseLeft)
+            {
+                downFlag = NativeMethods.MOUSEEVENTF_LEFTDOWN;
+                upFlag = NativeMethods.MOUSEEVENTF_LEFTUP;
+            }
+            else if (button == MouseBindButton.MouseRight)
+            {
+                downFlag = NativeMethods.MOUSEEVENTF_RIGHTDOWN;
+                upFlag = NativeMethods.MOUSEEVENTF_RIGHTUP;
+            }
+            else if (button == MouseBindButton.Middle)
             {
                 downFlag = NativeMethods.MOUSEEVENTF_MIDDLEDOWN;
                 upFlag = NativeMethods.MOUSEEVENTF_MIDDLEUP;
@@ -486,12 +595,12 @@ namespace EldenInstantRoll
             }
         }
 
-        private void RaiseKeyCaptured(CaptureMode mode, KeyBinding binding, bool cancelled)
+        private void RaiseKeyCaptured(CaptureMode mode, string targetActionId, KeyBinding binding, bool cancelled)
         {
             EventHandler<KeyCapturedEventArgs> handler = KeyCaptured;
             if (handler != null)
             {
-                handler(this, new KeyCapturedEventArgs(mode, binding, cancelled));
+                handler(this, new KeyCapturedEventArgs(mode, targetActionId, binding, cancelled));
             }
         }
 

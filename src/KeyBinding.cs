@@ -13,9 +13,11 @@ namespace EldenInstantRoll
     public enum MouseBindButton
     {
         None = 0,
-        Mouse4 = 1,
-        Mouse5 = 2,
-        Middle = 3
+        MouseLeft = 1,
+        MouseRight = 2,
+        Middle = 3,
+        Mouse4 = 4,
+        Mouse5 = 5
     }
 
     public sealed class KeyBinding : IEquatable<KeyBinding>
@@ -54,14 +56,24 @@ namespace EldenInstantRoll
 
         public static KeyBinding DefaultRollKey()
         {
-            // Physical Q key (scan code 0x10)
-            return FromKeyboard(0x10, false, "Q");
+            // Standard Elden Ring Nightreign dodge key: Left Shift (scan code 0x2A)
+            return FromKeyboard(0x2A, false, "LShift");
         }
 
         public static KeyBinding DefaultToggleHotkey()
         {
             // Physical F8 key (scan code 0x42)
             return FromKeyboard(0x42, false, "F8");
+        }
+
+        public uint GetKeyboardCompositeId()
+        {
+            return ((uint)ScanCode << 1) | (IsExtended ? 1u : 0u);
+        }
+
+        public static uint MakeKeyboardCompositeId(ushort scanCode, bool isExtended)
+        {
+            return ((uint)scanCode << 1) | (isExtended ? 1u : 0u);
         }
 
         public string FormatBadgeText()
@@ -76,6 +88,17 @@ namespace EldenInstantRoll
 
         public string FormatShortText()
         {
+            if (Kind == BindingKind.Mouse)
+            {
+                switch (MouseButton)
+                {
+                    case MouseBindButton.MouseLeft: return "MouseLeft";
+                    case MouseBindButton.MouseRight: return "MouseRight";
+                    case MouseBindButton.Middle: return "MouseMiddle";
+                    case MouseBindButton.Mouse4: return "Mouse4";
+                    case MouseBindButton.Mouse5: return "Mouse5";
+                }
+            }
             return DisplayName;
         }
 
@@ -103,9 +126,31 @@ namespace EldenInstantRoll
             }
 
             string trimmed = value.Trim();
+            if (trimmed.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
             if (trimmed.StartsWith("MOUSE:", StringComparison.OrdinalIgnoreCase))
             {
                 string buttonText = trimmed.Substring(6).Trim();
+                if (buttonText.Equals("MouseMiddle", StringComparison.OrdinalIgnoreCase) ||
+                    buttonText.Equals("MButton", StringComparison.OrdinalIgnoreCase))
+                {
+                    binding = FromMouse(MouseBindButton.Middle);
+                    return true;
+                }
+                if (buttonText.Equals("LButton", StringComparison.OrdinalIgnoreCase))
+                {
+                    binding = FromMouse(MouseBindButton.MouseLeft);
+                    return true;
+                }
+                if (buttonText.Equals("RButton", StringComparison.OrdinalIgnoreCase))
+                {
+                    binding = FromMouse(MouseBindButton.MouseRight);
+                    return true;
+                }
+
                 MouseBindButton btn;
                 if (Enum.TryParse<MouseBindButton>(buttonText, true, out btn) && btn != MouseBindButton.None)
                 {
@@ -205,12 +250,16 @@ namespace EldenInstantRoll
         {
             switch (button)
             {
-                case MouseBindButton.Mouse4:
-                    return "Mouse4 (뒤로)";
-                case MouseBindButton.Mouse5:
-                    return "Mouse5 (앞으로)";
+                case MouseBindButton.MouseLeft:
+                    return "MouseLeft";
+                case MouseBindButton.MouseRight:
+                    return "MouseRight";
                 case MouseBindButton.Middle:
-                    return "Mouse Middle";
+                    return "MouseMiddle";
+                case MouseBindButton.Mouse4:
+                    return "Mouse4";
+                case MouseBindButton.Mouse5:
+                    return "Mouse5";
                 default:
                     return "Mouse";
             }
@@ -218,12 +267,23 @@ namespace EldenInstantRoll
 
         public static string ResolveKeyboardDisplayName(ushort scanCode, bool isExtended)
         {
-            // Explicit friendly labels for common keys so names stay consistent regardless of Windows locale
             if (!isExtended)
             {
                 switch (scanCode)
                 {
-                    case 0x01: return "ESC";
+                    case 0x01: return "Esc";
+                    case 0x02: return "1";
+                    case 0x03: return "2";
+                    case 0x04: return "3";
+                    case 0x05: return "4";
+                    case 0x06: return "5";
+                    case 0x07: return "6";
+                    case 0x08: return "7";
+                    case 0x09: return "8";
+                    case 0x0A: return "9";
+                    case 0x0B: return "0";
+                    case 0x0C: return "-";
+                    case 0x0D: return "=";
                     case 0x0E: return "Backspace";
                     case 0x0F: return "Tab";
                     case 0x10: return "Q";
@@ -247,6 +307,7 @@ namespace EldenInstantRoll
                     case 0x24: return "J";
                     case 0x25: return "K";
                     case 0x26: return "L";
+                    case 0x29: return "`";
                     case 0x2A: return "LShift";
                     case 0x2C: return "Z";
                     case 0x2D: return "X";
